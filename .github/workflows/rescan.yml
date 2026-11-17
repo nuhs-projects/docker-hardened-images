@@ -51,7 +51,7 @@ jobs:
           command: cves
           image: registry://${{ env.REF }}
           platform: ${{ matrix.platform }}
-          only-fixed: ${{ vars.SCOUT_ONLY_FIXED != 'false' }}
+          only-fixed: ${{ matrix.image.repo != 'java' && vars.SCOUT_ONLY_FIXED != 'false' }}
           exit-code: true
           summary: true
 

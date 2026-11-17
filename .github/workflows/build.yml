@@ -7,10 +7,11 @@
 #
 # Both must pass, before anything is pushed:
 #   - the image's test.sh
-#   - Trivy (also looks for secrets baked into a layer) and Docker Scout: no
-#     fixable vulnerability of any severity.
+#   - Docker Scout, with DHI's VEX: no fixable vulnerability of any severity.
 #     Set the repository variable SCOUT_ONLY_FIXED to "false" to fail on
-#     unfixed ones as well.
+#     unfixed ones as well. Java fails on any vulnerability, fixable or not,
+#     on both platforms.
+#   - Trivy: no secret baked into a layer.
 #
 # Needs: secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (a Docker Hub personal
 # access token, read & write: pulls from dhi.io, runs Scout, pushes), and the
@@ -82,25 +83,34 @@ jobs:
       - name: Build (linux/arm64, to check it builds)
         run: |
           for target in dev runtime; do
-            docker buildx build --platform linux/arm64 --target "$target" -f "$DOCKERFILE" .
+            load_args=()
+            if [[ "${{ matrix.image.repo }}" == java ]]; then
+              load_args=(--load -t "local/$TAG-$target-arm64")
+            fi
+            docker buildx build --platform linux/arm64 "${load_args[@]}" \
+              --target "$target" -f "$DOCKERFILE" .
           done
 
       - name: Smoke test
         run: ${{ matrix.image.path }}/test.sh "local/$TAG-dev" "local/$TAG-runtime"
 
-      - name: Trivy (dev)
+      - name: Java smoke test (linux/arm64)
+        if: matrix.image.repo == 'java'
+        run: ${{ matrix.image.path }}/test.sh "local/$TAG-dev-arm64" "local/$TAG-runtime-arm64"
+
+      # Secrets only: Docker Scout is the vulnerability gate, as it applies
+      # DHI's VEX and matches what Docker Hub shows
+      - name: Trivy secrets (dev)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: local/${{ env.TAG }}-dev
-          scanners: vuln,secret
-          ignore-unfixed: ${{ vars.SCOUT_ONLY_FIXED != 'false' }}
+          scanners: secret
           exit-code: '1'
-      - name: Trivy (runtime)
+      - name: Trivy secrets (runtime)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: local/${{ env.TAG }}-runtime
-          scanners: vuln,secret
-          ignore-unfixed: ${{ vars.SCOUT_ONLY_FIXED != 'false' }}
+          scanners: secret
           exit-code: '1'
 
       # The CLI rather than docker/scout-action: scans need --vex-location
@@ -114,14 +124,26 @@ jobs:
       - name: Docker Scout
         run: |
           flags=(--exit-code --format markdown)
-          [[ "${{ vars.SCOUT_ONLY_FIXED }}" == false ]] || flags+=(--only-fixed)
+          if [[ "${{ matrix.image.repo }}" != java && "${{ vars.SCOUT_ONLY_FIXED }}" != false ]]; then
+            flags+=(--only-fixed)
+          fi
+          if compgen -G "vex/*.json" > /dev/null; then
+            flags+=(--vex-location vex)
+          fi
           status=0
           for target in dev runtime; do
             echo "### Docker Scout: $TAG $target" >> "$GITHUB_STEP_SUMMARY"
             docker scout cves "${flags[@]}" \
-              --vex-location vex "local://local/$TAG-$target" \
+              "local://local/$TAG-$target" \
               >> "$GITHUB_STEP_SUMMARY" || status=1
           done
+          if [[ "${{ matrix.image.repo }}" == java ]]; then
+            for target in dev runtime; do
+              echo "### Docker Scout: $TAG $target (linux/arm64)" >> "$GITHUB_STEP_SUMMARY"
+              docker scout cves "${flags[@]}" --platform linux/arm64 \
+                "local://local/$TAG-$target-arm64" >> "$GITHUB_STEP_SUMMARY" || status=1
+            done
+          fi
           exit $status
 
       - name: Push (linux/amd64 + linux/arm64) and sign
@@ -143,9 +165,12 @@ jobs:
             # (rescan.yml checks it does). All of it: the runtime image also
             # carries packages taken from DHI's -dev image.
             vex_files=()
+            shopt -s nullglob
             for f in vex/*.json; do vex_files+=(--file "$f"); done
-            docker scout attestation add --predicate-type https://openvex.dev/ns/v0.2.0 \
-              "${vex_files[@]}" "$NAME:$TAG$suffix@$digest"
+            if ((${#vex_files[@]})); then
+              docker scout attestation add --predicate-type https://openvex.dev/ns/v0.2.0 \
+                "${vex_files[@]}" "$NAME:$TAG$suffix@$digest"
+            fi
           done
 
       - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1

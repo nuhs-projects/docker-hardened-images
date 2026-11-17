@@ -2,8 +2,8 @@
 
 Base images for NUHS applications, built on
 [Docker Hardened Images](https://dhi.io) (DHI) with the parts applications do
-not need removed, and published only when Trivy and Docker Scout find no
-fixable vulnerability.
+not need removed, and published only when Docker Scout finds no fixable
+vulnerability and Trivy finds no secret.
 
 Maintained by NUHS for NUHS applications. Anyone may use them under the
 [Apache License 2.0](LICENSE), as is, without warranty or support.
@@ -16,8 +16,10 @@ is promised.
 | --- | --- |
 | `yongchenglow88/python:3.14-debian13` | Runtime: what your application ships on |
 | `yongchenglow88/python:3.14-debian13-dev` | Build stage: install dependencies |
+| `yongchenglow88/java:21-alpine3.23` | Java 21 JRE runtime: what your application ships on |
+| `yongchenglow88/java:21-alpine3.23-dev` | Java 21 JDK build stage: compile and package |
 
-Each is published for `linux/amd64` and `linux/arm64`, also under a dated tag
+Published images support `linux/amd64` and `linux/arm64`, also under a dated tag
 (`3.14-debian13-20261117`), with an SBOM, provenance and a cosign signature.
 Pin the digest in your Dockerfile, not just the tag.
 
@@ -36,6 +38,21 @@ CMD ["/opt/venv/bin/python", "-m", "service"]
 
 The runtime image has no shell, no package manager and no pip, and runs as
 user 65532. Build everything in the `-dev` stage and copy the result across.
+
+## Java 21
+
+`images/java/21-alpine3.23/Dockerfile` provides a digest-pinned DHI JDK dev
+image and a DHI JRE runtime. Neither needs package removal. The runtime is
+nonroot (65532) and has no shell, package manager or compiler. The smoke test
+compiles a Java probe in dev and runs it on a read-only runtime, checking TLS
+trust, timezone data, threads and temporary files.
+
+Java has a stricter gate: **zero reported vulnerabilities**, including unfixed
+findings, in both targets and on both platforms, as reported by Docker Scout.
+`SCOUT_ONLY_FIXED` cannot relax this Java gate.
+Debian 13 was evaluated first, but its required gcc/libstdc++ packages have an
+unfixed CVE. Alpine 3.23 is therefore used and must be tested for each
+application's native-library compatibility.
 
 ## What is hardened
 
@@ -66,14 +83,14 @@ version in any Debian release yet:
 1. **Dependabot** checks dhi.io daily and opens a PR when DHI publishes a new
    digest of an image we use.
 2. **PR** (`.github/workflows/pr.yml`): builds the changed images, runs each
-   image's `test.sh`, and fails on any fixable vulnerability found by Trivy or
-   Docker Scout, in either target. See [Security checks](#security-checks).
+   image's `test.sh`, and fails on any fixable vulnerability Docker Scout
+   finds, in either target. See [Security checks](#security-checks).
 3. **Release** (`release.yml`): on merge to `main`, the same checks, then the
    push to Docker Hub for both platforms, and signing.
 4. **Rescan** (`rescan.yml`): every night, Docker Scout scans the published
    images; a new vulnerability opens an issue.
 
-The gate is "no fixable vulnerability": a CVE that Debian has not fixed yet
+For Python, the gate is "no fixable vulnerability": a CVE that Debian has not fixed yet
 cannot be removed by rebuilding. To fail on those too, set the repository
 variable `SCOUT_ONLY_FIXED` to `false`.
 
@@ -109,8 +126,10 @@ images/python/3.14-debian13/test.sh local/python-dev local/python-runtime
 Every pull request must pass, through the single `PR / done` check:
 
 - each changed image's `test.sh`
-- Trivy: fixable vulnerabilities, and secrets baked into an image layer
-- Docker Scout: fixable vulnerabilities, with DHI's VEX statements
+- Docker Scout: fixable vulnerabilities (any, for Java), with DHI's VEX
+  statements. Scout is the only vulnerability gate, so CI agrees with what
+  Docker Hub shows.
+- Trivy: secrets baked into an image layer
 - gitleaks: secrets in the PR's commits
 - actionlint and zizmor: the workflows themselves (zizmor at medium severity
   and above)
