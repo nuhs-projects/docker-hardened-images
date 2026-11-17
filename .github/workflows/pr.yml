@@ -1,0 +1,45 @@
+# Build, test and scan the images a pull request changes. Nothing is pushed.
+# Make "PR / build" a required check on main.
+name: PR
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  list:
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.list.outputs.images }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - id: list
+        run: echo "images=$(.github/scripts/list-images.sh "origin/$GITHUB_BASE_REF")" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: list
+    if: needs.list.outputs.images != '[]'
+    uses: ./.github/workflows/build.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      images: ${{ needs.list.outputs.images }}
+    secrets: inherit
+
+  # A required check must report even when no image changed
+  done:
+    needs: [list, build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: '[[ "${{ needs.build.result }}" =~ ^(success|skipped)$ ]]'

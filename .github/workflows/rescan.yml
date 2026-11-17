@@ -1,0 +1,67 @@
+# Nightly: scan the published images, both platforms, with Docker Scout.
+# A vulnerability found since the last release opens (or updates) an issue.
+# The fix is usually a newer DHI digest: merge Dependabot's PR, or run
+# Release by hand to rebuild on the latest one.
+name: Rescan
+
+on:
+  schedule:
+    - cron: "0 18 * * *"   # 02:00 Singapore time
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  list:
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.list.outputs.images }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: list
+        run: echo "images=$(.github/scripts/list-images.sh)" >> "$GITHUB_OUTPUT"
+
+  scan:
+    needs: list
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.list.outputs.images) }}
+        variant: ["", "-dev"]
+        platform: [linux/amd64, linux/arm64]
+    env:
+      REF: ${{ vars.DOCKERHUB_NAMESPACE }}/${{ matrix.image.repo }}:${{ matrix.image.tag }}${{ matrix.variant }}
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Docker Scout
+        id: scout
+        uses: docker/scout-action@v1
+        with:
+          command: cves
+          image: registry://${{ env.REF }}
+          platform: ${{ matrix.platform }}
+          only-fixed: ${{ vars.SCOUT_ONLY_FIXED != 'false' }}
+          exit-code: true
+          summary: true
+
+      - name: Open or update an issue
+        if: failure() && steps.scout.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          title="Vulnerabilities in $REF (${{ matrix.platform }})"
+          body="Docker Scout found vulnerabilities in the published image: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          number=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number')
+          if [[ -n "$number" ]]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
