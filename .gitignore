@@ -1,1 +1,6 @@
 __pycache__/
+
+# Local scan evidence and working notes stay out of the repo
+evidence/
+*-plan.md
+*-execution.md
