@@ -1,0 +1,17 @@
+NUHS Hardened Container Images
+Copyright 2026 National University Health System Pte. Ltd.
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+That license covers the contents of this repository: the Dockerfiles, the
+hardening scripts and the CI workflows.
+
+The published images are built on Docker Hardened Images
+(https://dhi.io), which Docker, Inc. provides under the Apache License,
+Version 2.0. Each image also contains third-party software (for example
+Debian packages and CPython), each under its own license; those licenses are
+listed in the image under /usr/share/doc/*/copyright and in the SBOM attached
+to each published image. Nothing in this repository's license changes the
+terms of that software.
+
+These images are not produced, endorsed or supported by Docker, Inc.
+"Docker" is a trademark of Docker, Inc.
