@@ -2,8 +2,8 @@
 
 Base images for NUHS applications, built on
 [Docker Hardened Images](https://dhi.io) (DHI) with the parts applications do
-not need removed, and published only when Trivy and Docker Scout find no
-fixable vulnerability.
+not need removed, and published only when Docker Scout finds no fixable
+vulnerability and Trivy finds no secret.
 
 Maintained by NUHS for NUHS applications. Anyone may use them under the
 [Apache License 2.0](LICENSE), as is, without warranty or support.
@@ -66,8 +66,8 @@ version in any Debian release yet:
 1. **Dependabot** checks dhi.io daily and opens a PR when DHI publishes a new
    digest of an image we use.
 2. **PR** (`.github/workflows/pr.yml`): builds the changed images, runs each
-   image's `test.sh`, and fails on any fixable vulnerability found by Trivy or
-   Docker Scout, in either target. See [Security checks](#security-checks).
+   image's `test.sh`, and fails on any fixable vulnerability Docker Scout
+   finds, in either target. See [Security checks](#security-checks).
 3. **Release** (`release.yml`): on merge to `main`, the same checks, then the
    push to Docker Hub for both platforms, and signing.
 4. **Rescan** (`rescan.yml`): every night, Docker Scout scans the published
@@ -109,8 +109,9 @@ images/python/3.14-debian13/test.sh local/python-dev local/python-runtime
 Every pull request must pass, through the single `PR / done` check:
 
 - each changed image's `test.sh`
-- Trivy: fixable vulnerabilities, and secrets baked into an image layer
-- Docker Scout: fixable vulnerabilities, with DHI's VEX statements
+- Docker Scout: fixable vulnerabilities, with DHI's VEX statements. Scout is
+  the only vulnerability gate, so CI agrees with what Docker Hub shows.
+- Trivy: secrets baked into an image layer
 - gitleaks: secrets in the PR's commits
 - actionlint and zizmor: the workflows themselves (zizmor at medium severity
   and above)
