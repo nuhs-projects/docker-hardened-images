@@ -3,9 +3,17 @@
 #   [{"path":"images/python/3.14-debian13","repo":"python","tag":"3.14-debian13"}, ...]
 #
 # Usage: list-images.sh [<base ref>]
-# Without a base ref, every image. With one, only images whose folder changed
-# since it, or every image if the shared hardening or CI changed.
+# Without a base ref, every image. With one, only the images whose inputs
+# changed since it:
+#   images/<repo>/<tag>/**   that image (Dockerfile, test.sh, ...)
+#   hardening/**             images whose Dockerfile mounts hardening/
+#   the build pipeline       every image: build.yml and the scripts it runs
+#                            decide how every image is built, scanned and
+#                            pushed
+# Anything else (README, other workflows, Dependabot config) builds nothing.
 set -euo pipefail
+
+pipeline='^\.github/(workflows/build\.yml|scripts/(list-images|dhi-vex)\.sh)$'
 
 all=$(find images -mindepth 3 -maxdepth 3 -name Dockerfile -exec dirname {} \; | sort)
 
@@ -13,11 +21,19 @@ if [[ $# -eq 0 ]]; then
     selected=$all
 else
     changed=$(git diff --name-only "$1"...HEAD)
-    if grep -qE '^(hardening|\.github)/' <<<"$changed"; then
+    if grep -qE "$pipeline" <<<"$changed"; then
         selected=$all
     else
-        # Changed image folders that still exist (a deleted image builds nothing)
-        selected=$(grep -Fxf <(grep -oE '^images/[^/]+/[^/]+' <<<"$changed" | sort -u) <<<"$all" || true)
+        selected=$(
+            # Changed image folders that still exist (a deleted image builds nothing)
+            grep -Fxf <(grep -oE '^images/[^/]+/[^/]+' <<<"$changed" | sort -u) <<<"$all" || true
+            if grep -q '^hardening/' <<<"$changed"; then
+                for path in $all; do
+                    if grep -q 'source=hardening' "$path/Dockerfile"; then echo "$path"; fi
+                done
+            fi
+        )
+        selected=$(sort -u <<<"$selected")
     fi
 fi
 
