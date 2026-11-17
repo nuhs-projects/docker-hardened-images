@@ -71,6 +71,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Every image, not only the changed ones: the policy holds for all
+      - name: Base images are DHI, pinned by digest
+        run: .github/scripts/check-dhi-base.sh
       - name: actionlint
         env:
           VERSION: 1.7.12
