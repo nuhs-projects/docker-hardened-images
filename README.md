@@ -16,11 +16,19 @@ is promised.
 | --- | --- |
 | `yongchenglow88/python:3.14-debian13` | Runtime: what your application ships on |
 | `yongchenglow88/python:3.14-debian13-dev` | Build stage: install dependencies |
-| `yongchenglow88/java:21-alpine3.23` | Java 21 JRE runtime: what your application ships on |
-| `yongchenglow88/java:21-alpine3.23-dev` | Java 21 JDK build stage: compile and package |
+| `yongchenglow88/eclipse-temurin:21-alpine3.23` | Java 21 JRE runtime: what your application ships on |
+| `yongchenglow88/eclipse-temurin:21-alpine3.23-dev` | Java 21 JDK build stage: compile and package |
 
-Published images support `linux/amd64` and `linux/arm64`, also under a dated tag
-(`3.14-debian13-20261117`), with an SBOM, provenance and a cosign signature.
+Image names and tags follow the DHI image each is built on (`dhi.io/python:3.14-debian13`
+becomes `python:3.14-debian13`). Each image is also tagged with the full
+version of that DHI image, such as `python:3.14.10-debian13` and
+`python:3.14.10-debian13-dev`: the short tag moves to each new version, the
+full-version tag stays on one version (it still moves when DHI rebuilds
+that version with OS patches).
+
+Published images support `linux/amd64` and `linux/arm64`, with an SBOM,
+provenance and a cosign signature. Signatures are OCI referrers, not
+`sha256-*.sig` tags, so verify with cosign 2.6 or later.
 Pin the digest in your Dockerfile, not just the tag.
 
 ```dockerfile
@@ -39,10 +47,11 @@ CMD ["/opt/venv/bin/python", "-m", "service"]
 The runtime image has no shell, no package manager and no pip, and runs as
 user 65532. Build everything in the `-dev` stage and copy the result across.
 
-## Java 21
+## Java 21 (Eclipse Temurin)
 
-`images/java/21-alpine3.23/Dockerfile` provides a digest-pinned DHI JDK dev
-image and a DHI JRE runtime. Neither needs package removal. The runtime is
+`images/eclipse-temurin/21-alpine3.23/Dockerfile` provides a digest-pinned DHI
+Eclipse Temurin JDK dev image (`dhi.io/eclipse-temurin:21-jdk-alpine3.23-dev`)
+and JRE runtime (`dhi.io/eclipse-temurin:21-alpine3.23`). Neither needs package removal. The runtime is
 nonroot (65532) and has no shell, package manager or compiler. The smoke test
 compiles a Java probe in dev and runs it on a read-only runtime, checking TLS
 trust, timezone data, threads and temporary files.
@@ -103,14 +112,17 @@ reports about 40 CVEs in the dev image instead of 3.
 
 ## Adding an image
 
-1. Create `images/<repo>/<tag>/` (for example `images/java/21-debian13/`)
+1. Create `images/<repo>/<tag>/` (for example `images/eclipse-temurin/21-debian13/`)
    with a `Dockerfile` that has a `dev` and a `runtime` target, `FROM` DHI
    images pinned by digest, and an executable `test.sh <dev> <runtime>`.
 2. Purge what the runtime does not need with `harden.py --purge`. In an image
    with neither a shell nor Python (Java runtime images), run the hardening in
    an earlier stage instead.
 3. Open a PR. The CI picks the folder up; no workflow changes are needed. It
-   publishes as `<namespace>/<repo>:<tag>` and `:<tag>-dev`.
+   publishes as `<namespace>/<repo>:<tag>` and `:<tag>-dev`, plus the full
+   version from the DHI runtime image's `com.docker.dhi.version` label. Name
+   the folders after the DHI image: `<repo>` as DHI's repository, `<tag>` as
+   its runtime tag.
 
 Build and test locally from the repository root:
 

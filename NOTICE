@@ -13,5 +13,8 @@ listed in the image under /usr/share/doc/*/copyright and in the SBOM attached
 to each published image. Nothing in this repository's license changes the
 terms of that software.
 
-These images are not produced, endorsed or supported by Docker, Inc.
-"Docker" is a trademark of Docker, Inc.
+These images are not produced, endorsed or supported by Docker, Inc. or the
+Eclipse Foundation. "Docker" is a trademark of Docker, Inc. Eclipse and
+Temurin are trademarks of the Eclipse Foundation; Java and OpenJDK are
+trademarks of Oracle and/or its affiliates. These names are used only to
+identify the software the images contain.
