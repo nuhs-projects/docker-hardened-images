@@ -19,7 +19,7 @@ jobs:
     outputs:
       images: ${{ steps.list.outputs.images }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - id: list
         run: echo "images=$(.github/scripts/list-images.sh)" >> "$GITHUB_OUTPUT"
 
