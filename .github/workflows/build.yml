@@ -1,0 +1,154 @@
+# Build, test and scan images; optionally push them to Docker Hub.
+# Called by pr.yml (no push) and release.yml (push).
+#
+# Each image folder builds two targets from one Dockerfile:
+#   runtime -> <namespace>/<repo>:<tag>      and :<tag>-<YYYYMMDD>
+#   dev     -> <namespace>/<repo>:<tag>-dev  and :<tag>-dev-<YYYYMMDD>
+#
+# Both must pass, before anything is pushed:
+#   - the image's test.sh
+#   - Trivy and Docker Scout: no fixable vulnerability of any severity.
+#     Set the repository variable SCOUT_ONLY_FIXED to "false" to fail on
+#     unfixed ones as well.
+#
+# Needs: secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (a Docker Hub personal
+# access token, read & write: pulls from dhi.io, runs Scout, pushes), and the
+# repository variable DOCKERHUB_NAMESPACE (e.g. yongchenglow88).
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      images:
+        description: JSON array from .github/scripts/list-images.sh
+        type: string
+        required: true
+      push:
+        type: boolean
+        default: false
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: true
+      DOCKERHUB_TOKEN:
+        required: true
+
+jobs:
+  build:
+    name: ${{ matrix.image.repo }}:${{ matrix.image.tag }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write   # cosign keyless signing
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(inputs.images) }}
+    env:
+      NAME: ${{ vars.DOCKERHUB_NAMESPACE }}/${{ matrix.image.repo }}
+      TAG: ${{ matrix.image.tag }}
+      DOCKERFILE: ${{ matrix.image.path }}/Dockerfile
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-qemu-action@v3   # arm64 builds on the amd64 runner
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to dhi.io
+        uses: docker/login-action@v3
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # amd64 is loaded into the local daemon to test and scan; arm64 is
+      # scanned by Scout from the pushed image in rescan.yml
+      - name: Build (linux/amd64)
+        run: |
+          for target in dev runtime; do
+            docker buildx build --platform linux/amd64 --load --target "$target" \
+              -t "local/$TAG-$target" -f "$DOCKERFILE" .
+          done
+      - name: Build (linux/arm64, to check it builds)
+        run: |
+          for target in dev runtime; do
+            docker buildx build --platform linux/arm64 --target "$target" -f "$DOCKERFILE" .
+          done
+
+      - name: Smoke test
+        run: ${{ matrix.image.path }}/test.sh "local/$TAG-dev" "local/$TAG-runtime"
+
+      - name: Trivy (dev)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: local/${{ env.TAG }}-dev
+          scanners: vuln
+          ignore-unfixed: ${{ vars.SCOUT_ONLY_FIXED != 'false' }}
+          exit-code: '1'
+      - name: Trivy (runtime)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: local/${{ env.TAG }}-runtime
+          scanners: vuln
+          ignore-unfixed: ${{ vars.SCOUT_ONLY_FIXED != 'false' }}
+          exit-code: '1'
+
+      # The CLI rather than docker/scout-action: scans need --vex-location
+      - name: Install Docker Scout
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/docker/scout-cli/main/install.sh -o /tmp/scout-install.sh
+          sh /tmp/scout-install.sh
+      - name: Download DHI's VEX statements
+        run: .github/scripts/dhi-vex.sh "$DOCKERFILE" vex linux/amd64 linux/arm64
+
+      - name: Docker Scout
+        run: |
+          flags=(--exit-code --format markdown)
+          [[ "${{ vars.SCOUT_ONLY_FIXED }}" == false ]] || flags+=(--only-fixed)
+          status=0
+          for target in dev runtime; do
+            echo "### Docker Scout: $TAG $target" >> "$GITHUB_STEP_SUMMARY"
+            docker scout cves "${flags[@]}" \
+              --vex-location vex "local://local/$TAG-$target" \
+              >> "$GITHUB_STEP_SUMMARY" || status=1
+          done
+          exit $status
+
+      - name: Push (linux/amd64 + linux/arm64) and sign
+        if: inputs.push
+        run: |
+          date=$(date -u +%Y%m%d)
+          for target in dev runtime; do
+            suffix=$([[ $target == dev ]] && echo -dev || true)
+            docker buildx build --platform linux/amd64,linux/arm64 --target "$target" \
+              --sbom=true --provenance=mode=max \
+              --label org.opencontainers.image.vendor="National University Health System" \
+              --label org.opencontainers.image.licenses=Apache-2.0 \
+              --label org.opencontainers.image.revision="$GITHUB_SHA" \
+              -t "$NAME:$TAG$suffix" -t "$NAME:$TAG$suffix-$date" \
+              --metadata-file "/tmp/$target.json" --push -f "$DOCKERFILE" .
+            digest=$(jq -r '."containerimage.digest"' "/tmp/$target.json")
+            echo "$NAME:$TAG$suffix@$digest" >> /tmp/pushed
+            # So anyone's Scout scan of the published image applies DHI's VEX
+            # (rescan.yml checks it does). All of it: the runtime image also
+            # carries packages taken from DHI's -dev image.
+            vex_files=()
+            for f in vex/*.json; do vex_files+=(--file "$f"); done
+            docker scout attestation add --predicate-type https://openvex.dev/ns/v0.2.0 \
+              "${vex_files[@]}" "$NAME:$TAG$suffix@$digest"
+          done
+
+      - uses: sigstore/cosign-installer@v3
+        if: inputs.push
+      - name: Sign
+        if: inputs.push
+        run: |
+          while read -r ref; do
+            cosign sign --yes "$ref"
+            echo "- \`$ref\`" >> "$GITHUB_STEP_SUMMARY"
+          done < /tmp/pushed

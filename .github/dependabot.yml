@@ -1,0 +1,30 @@
+# Opens a PR when an upstream image (pinned by digest in a Dockerfile) or a
+# GitHub Action has a new version. PRs run pr.yml; merging releases.
+version: 2
+
+registries:
+  dhi:
+    type: docker-registry
+    url: https://dhi.io
+    username: ${{secrets.DOCKERHUB_USERNAME}}
+    password: ${{secrets.DOCKERHUB_TOKEN}}
+
+updates:
+  - package-ecosystem: docker
+    directories: ["/images/*/*"]
+    registries: [dhi]
+    schedule:
+      interval: daily
+    # New digests of the same tag only: a new Python version is a new image
+    # folder, not an update
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+    groups:
+      dhi:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

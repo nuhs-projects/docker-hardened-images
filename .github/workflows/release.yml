@@ -1,0 +1,48 @@
+# Push to Docker Hub the images a merge to main changed, after the same tests
+# and scans as a PR. Run it by hand to rebuild and push every image.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths: ["images/**", "hardening/**", ".github/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  list:
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.list.outputs.images }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - id: list
+        run: |
+          # Run by hand, or the first push to main (no previous commit): all
+          before="${{ github.event.before }}"
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch || "$before" =~ ^0+$ ]]; then
+            images=$(.github/scripts/list-images.sh)
+          else
+            images=$(.github/scripts/list-images.sh "$before")
+          fi
+          echo "images=$images" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: list
+    if: needs.list.outputs.images != '[]'
+    uses: ./.github/workflows/build.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      images: ${{ needs.list.outputs.images }}
+      push: true
+    secrets: inherit
