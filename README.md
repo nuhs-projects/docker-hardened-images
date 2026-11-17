@@ -88,7 +88,8 @@ version in any Debian release yet:
 3. **Release** (`release.yml`): on merge to `main`, the same checks, then the
    push to Docker Hub for both platforms, and signing.
 4. **Rescan** (`rescan.yml`): every night, Docker Scout scans the published
-   images; a new vulnerability opens an issue.
+   images; a new vulnerability opens one issue per image (covering both
+   targets and platforms), and the issue closes once every scan passes.
 
 For Python, the gate is "no fixable vulnerability": a CVE that Debian has not fixed yet
 cannot be removed by rebuilding. To fail on those too, set the repository
