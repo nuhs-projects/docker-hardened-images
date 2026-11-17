@@ -19,7 +19,20 @@ mkdir -p "$out"
 grep -E '^FROM +dhi\.io/[^ ]+ +AS +[a-z0-9_-]+' "$dockerfile" | while read -r _ ref _ target; do
     for platform in "$@"; do
         file="$out/$target-${platform//\//-}.json"
-        docker scout vex get --platform "$platform" "$ref" --output "$file"
-        echo "$ref ($platform) -> $file"
+        # Clean upstream images may have no VEX attestations. Only that explicit
+        # response is optional; authentication/network/other errors still fail CI.
+        error=$(mktemp)
+        if docker scout vex get --platform "$platform" "$ref" --output "$file" >"$error" 2>&1; then
+            cat "$error"
+            echo "$ref ($platform) -> $file"
+        elif grep -q 'no VEX attestations found for image' "$error"; then
+            rm -f "$file"
+            echo "$ref ($platform): no upstream VEX attestations"
+        else
+            cat "$error" >&2
+            rm -f "$error"
+            exit 1
+        fi
+        rm -f "$error"
     done
 done
