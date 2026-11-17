@@ -1,5 +1,6 @@
 # Build, test and scan the images a pull request changes. Nothing is pushed.
-# Make "PR / build" a required check on main.
+# Also scans the PR's commits for secrets and lints the workflows.
+# Make "PR / done" a required check on main.
 name: PR
 
 on:
@@ -19,9 +20,10 @@ jobs:
     outputs:
       images: ${{ steps.list.outputs.images }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - id: list
         run: echo "images=$(.github/scripts/list-images.sh "origin/$GITHUB_BASE_REF")" >> "$GITHUB_OUTPUT"
 
@@ -34,12 +36,60 @@ jobs:
       id-token: write
     with:
       images: ${{ needs.list.outputs.images }}
-    secrets: inherit
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
+  # Only the PR's commits, so an old, already-rotated secret does not fail
+  # every PR. The CLI rather than gitleaks-action, which needs a license for
+  # organisation repositories.
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install gitleaks
+        env:
+          VERSION: 8.30.1
+          SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          curl -fsSL -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v$VERSION/gitleaks_${VERSION}_linux_x64.tar.gz"
+          echo "$SHA256  /tmp/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+      - name: Scan the PR's commits
+        run: /tmp/gitleaks git --log-opts="origin/${GITHUB_BASE_REF}..HEAD" --redact --verbose .
+
+  # Pinned tools, so a lint change comes from a PR, not from a release. Dockerfile
+  # checks (docker build --check) are not run: they pull the dhi.io base images,
+  # which needs the Docker Hub secrets, and this job has none.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: actionlint
+        env:
+          VERSION: 1.7.12
+          SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          curl -fsSL -o /tmp/actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v$VERSION/actionlint_${VERSION}_linux_amd64.tar.gz"
+          echo "$SHA256  /tmp/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          /tmp/actionlint -color
+      - name: zizmor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: pipx run zizmor==1.32.0 --min-severity medium .github/workflows
 
   # A required check must report even when no image changed
   done:
-    needs: [list, build]
+    needs: [list, build, secrets, lint]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - run: '[[ "${{ needs.build.result }}" =~ ^(success|skipped)$ ]]'
+      - run: '[[ "${{ needs.build.result }}" =~ ^(success|skipped)$ && "${{ needs.secrets.result }}" == success && "${{ needs.lint.result }}" == success ]]'

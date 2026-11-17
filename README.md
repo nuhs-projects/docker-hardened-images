@@ -67,7 +67,7 @@ version in any Debian release yet:
    digest of an image we use.
 2. **PR** (`.github/workflows/pr.yml`): builds the changed images, runs each
    image's `test.sh`, and fails on any fixable vulnerability found by Trivy or
-   Docker Scout, in either target.
+   Docker Scout, in either target. See [Security checks](#security-checks).
 3. **Release** (`release.yml`): on merge to `main`, the same checks, then the
    push to Docker Hub for both platforms, and signing.
 4. **Rescan** (`rescan.yml`): every night, Docker Scout scans the published
@@ -104,6 +104,21 @@ done
 images/python/3.14-debian13/test.sh local/python-dev local/python-runtime
 ```
 
+## Security checks
+
+Every pull request must pass, through the single `PR / done` check:
+
+- each changed image's `test.sh`
+- Trivy: fixable vulnerabilities, and secrets baked into an image layer
+- Docker Scout: fixable vulnerabilities, with DHI's VEX statements
+- gitleaks: secrets in the PR's commits
+- actionlint and zizmor: the workflows themselves (zizmor at medium severity
+  and above)
+
+Every action is pinned to a commit SHA; Dependabot updates them. Dockerfiles
+are not checked with `docker build --check`, as that needs a dhi.io login and
+the lint job has no secrets.
+
 ## Repository setup
 
 - Actions secrets **and** Dependabot secrets: `DOCKERHUB_USERNAME`,
@@ -111,7 +126,20 @@ images/python/3.14-debian13/test.sh local/python-dev local/python-runtime
   Dependabot PRs only see Dependabot secrets.
 - Actions variable: `DOCKERHUB_NAMESPACE` (`yongchenglow88`).
 - Branch protection on `main`: require a PR and the `PR / done` check.
+- Environment `release`, with required reviewers: Release jobs that push
+  wait for approval. Without it, the jobs run unattended. The Docker Hub
+  secrets can stay at repository level; to move them to the environment,
+  also make them optional in `build.yml`'s `workflow_call` and drop the
+  repository copies.
 - Organisation: require two-factor authentication.
+
+Before making the repository public:
+
+- Settings > Code security: enable secret scanning and push protection.
+- Settings > Actions > General: require approval for workflows from outside
+  collaborators (all of them, not only first-time contributors).
+- Check that `PR / done` is the required check, and that the Docker Hub token
+  is not shared with anything else.
 
 ## Moving to an NUHS namespace
 
