@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # Print the images to build as a JSON array for a GitHub Actions matrix:
-#   [{"path":"images/python/3.14-debian13","repo":"python","tag":"3.14-debian13"}, ...]
+#   [{"path":"images/python/3.14-debian13","repo":"python","tag":"3.14-debian13",
+#     "targets":["dev","runtime"],"java":false}, ...]
+#
+# targets: the Dockerfile's dev and runtime stages. Every image has a dev
+# target; one with no runtime stage (Maven: DHI ships it only as -dev) builds,
+# tests, scans and publishes the dev target alone.
+# java: Java images fail the scan on any vulnerability, fixable or not, and
+# are tested on arm64 as well.
 #
 # Usage: list-images.sh [<base ref>]
 # Without a base ref, every image. With one, only the images whose inputs
@@ -14,6 +21,7 @@
 set -euo pipefail
 
 pipeline='^\.github/(workflows/build\.yml|scripts/(list-images|dhi-vex)\.sh)$'
+java_repos=' eclipse-temurin maven '
 
 all=$(find images -mindepth 3 -maxdepth 3 -name Dockerfile -exec dirname {} \; | sort)
 
@@ -39,5 +47,12 @@ fi
 
 for path in $selected; do
     IFS=/ read -r _ repo tag <<<"$path"
-    printf '{"path":"%s","repo":"%s","tag":"%s"}\n' "$path" "$repo" "$tag"
+    targets='["dev"]'
+    if grep -qiE '^FROM .* AS runtime[[:space:]]*$' "$path/Dockerfile"; then
+        targets='["dev","runtime"]'
+    fi
+    java=false
+    if [[ "$java_repos" == *" $repo "* ]]; then java=true; fi
+    printf '{"path":"%s","repo":"%s","tag":"%s","targets":%s,"java":%s}\n' \
+        "$path" "$repo" "$tag" "$targets" "$java"
 done | jq -cs .
