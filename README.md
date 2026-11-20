@@ -77,6 +77,7 @@ in CI. If DHI's terms or availability change, this policy is revisited.
 | `yongchenglow88/python:3.14-debian13-dev`          | Build stage: install dependencies                   |
 | `yongchenglow88/eclipse-temurin:21-alpine3.23`     | Java 21 JRE runtime: what your application ships on |
 | `yongchenglow88/eclipse-temurin:21-alpine3.23-dev` | Java 21 JDK build stage: compile and package        |
+| `yongchenglow88/maven:3-jdk21-alpine3.23-dev`      | Maven 3 and Java 21 JDK build stage: `mvn package`  |
 
 Image names and tags follow the DHI image each is built on
 (`dhi.io/python:3.14-debian13` becomes `python:3.14-debian13`). Each image is
@@ -104,6 +105,19 @@ CMD ["/opt/venv/bin/python", "-m", "service"]
 ```
 
 The runtime images have no shell and no package manager, and run as user 65532. Build everything in the `-dev` stage and copy the result across.
+
+Maven has only a `-dev` image, as DHI publishes it only as one. Build with it
+and run on the Java runtime:
+
+```dockerfile
+FROM yongchenglow88/maven:3-jdk21-alpine3.23-dev@sha256:<digest> AS build
+COPY . .
+RUN mvn -B package
+
+FROM yongchenglow88/eclipse-temurin:21-alpine3.23@sha256:<digest>
+COPY --from=build /build/target/app.jar /app/app.jar
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]
+```
 
 ## What is hardened
 
@@ -154,6 +168,27 @@ The smoke test compiles a Java probe in dev and runs it on a read-only
 runtime, on both platforms, checking TLS trust, timezone data, threads and
 temporary files.
 
+### Maven 3 (Java 21, Alpine 3.23)
+
+|                                  | dev                                        |
+| -------------------------------- | ------------------------------------------ |
+| Upstream                         | `dhi.io/maven:3-jdk21-alpine3.23-dev`      |
+| Changes                          | none needed                                |
+| JDK                              | Eclipse Temurin 21, as in the Java images  |
+| Shell, package manager, compiler | kept                                       |
+| User, working directory          | root, `/build`                             |
+
+DHI publishes Maven only as a `-dev` image, so there is no runtime target and
+no `3-jdk21-alpine3.23` tag: run what it builds on
+`eclipse-temurin:21-alpine3.23`. The full-version tag comes from the dev
+image's label without its `-dev` suffix, for example
+`3.10.1-r0-jdk21-alpine3.23-dev`. It is held to the Java gate: zero reported
+vulnerabilities.
+
+The smoke test checks the shell and the Maven and Java versions, packages a
+small project (its plugins come from Maven Central) and runs the jar, on both
+platforms.
+
 ## How it stays patched
 
 1. **Dependabot** checks dhi.io daily and opens a PR when DHI publishes a new
@@ -179,14 +214,14 @@ Every pull request must pass, through the single `PR / done` check:
   is a `dhi.io` image pinned by digest or an earlier stage
   ([`check-dhi-base.sh`](.github/scripts/check-dhi-base.sh))
 - each changed image's `test.sh`
-- Docker Scout, with DHI's VEX statements, in both targets and on both
+- Docker Scout, with DHI's VEX statements, in each target and on both
   platforms. Scout is the only vulnerability gate, so CI agrees with what
   Docker Hub shows.
   - Python: no fixable vulnerability. A CVE that Debian has not fixed yet
     cannot be removed by rebuilding; to fail on those too, set the repository
     variable `SCOUT_ONLY_FIXED` to `false`.
-  - Java: zero reported vulnerabilities, fixed or not. `SCOUT_ONLY_FIXED`
-    does not relax this.
+  - Java (Eclipse Temurin and Maven): zero reported vulnerabilities, fixed or
+    not. `SCOUT_ONLY_FIXED` does not relax this.
 - Trivy: secrets baked into an image layer
 - gitleaks: secrets in the PR's commits
 - actionlint and zizmor: the workflows themselves (zizmor at medium severity
@@ -203,7 +238,10 @@ the lint job has no secrets.
    [Why only Docker Hardened Images](#why-only-docker-hardened-images).
 2. Create `images/<repo>/<tag>/` (for example
    `images/eclipse-temurin/21-debian13/`) with a `Dockerfile` that has a `dev`
-   and a `runtime` target, and an executable `test.sh <dev> <runtime>`. Every
+   and a `runtime` target, and an executable `test.sh <dev> <runtime>`. If DHI
+   publishes only a `-dev` image (as for Maven), leave out the `runtime` stage;
+   `test.sh` then takes only `<dev>`. A Java image's repository goes in
+   `java_repos` in [`list-images.sh`](.github/scripts/list-images.sh). Every
    `FROM` must be `dhi.io/<image>@sha256:<digest>` or an earlier stage, and so
    must every `--from`.
 3. Purge what the runtime does not need with `harden.py --purge`. In an image
@@ -211,7 +249,8 @@ the lint job has no secrets.
    an earlier stage, which must also be a DHI image.
 4. Open a PR. The CI picks the folder up; no workflow changes are needed. It
    publishes as `<namespace>/<repo>:<tag>` and `:<tag>-dev`, plus the full
-   version from the DHI runtime image's `com.docker.dhi.version` label. Name
+   version from the DHI runtime image's `com.docker.dhi.version` label (the
+   dev image's, without `-dev`, when there is no runtime). Name
    the folders after the DHI image: `<repo>` as DHI's repository, `<tag>` as
    its runtime tag.
 

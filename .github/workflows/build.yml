@@ -4,13 +4,15 @@
 # Each image folder builds two targets from one Dockerfile:
 #   runtime -> <namespace>/<repo>:<tag>      and :<version>
 #   dev     -> <namespace>/<repo>:<tag>-dev  and :<version>-dev
+# An image with no runtime stage (Maven) builds only dev; list-images.sh sets
+# each image's targets.
 #
 # Both must pass, before anything is pushed:
 #   - the image's test.sh
 #   - Docker Scout, with DHI's VEX: no fixable vulnerability of any severity.
 #     Set the repository variable SCOUT_ONLY_FIXED to "false" to fail on
-#     unfixed ones as well. Java fails on any vulnerability, fixable or not,
-#     on both platforms.
+#     unfixed ones as well. Java images (Eclipse Temurin, Maven) fail on any
+#     vulnerability, fixable or not, on both platforms.
 #   - Trivy: no secret baked into a layer.
 #
 # Needs: secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (a Docker Hub personal
@@ -52,6 +54,8 @@ jobs:
       NAME: ${{ vars.DOCKERHUB_NAMESPACE }}/${{ matrix.image.repo }}
       TAG: ${{ matrix.image.tag }}
       DOCKERFILE: ${{ matrix.image.path }}/Dockerfile
+      TARGETS: ${{ join(matrix.image.targets, ' ') }}
+      JAVA: ${{ matrix.image.java }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -76,40 +80,54 @@ jobs:
       # scanned by Scout from the pushed image in rescan.yml
       - name: Build (linux/amd64)
         run: |
-          for target in dev runtime; do
+          for target in $TARGETS; do
             docker buildx build --platform linux/amd64 --load --target "$target" \
               -t "local/$TAG-$target" -f "$DOCKERFILE" .
           done
       - name: Build (linux/arm64, to check it builds)
         run: |
-          for target in dev runtime; do
+          for target in $TARGETS; do
             load_args=()
-            if [[ "${{ matrix.image.repo }}" == eclipse-temurin ]]; then
+            if [[ "$JAVA" == true ]]; then
               load_args=(--load -t "local/$TAG-$target-arm64")
             fi
             docker buildx build --platform linux/arm64 "${load_args[@]}" \
               --target "$target" -f "$DOCKERFILE" .
           done
 
+      # test.sh takes the dev image, then the runtime image if there is one
       - name: Smoke test
-        run: ${{ matrix.image.path }}/test.sh "local/$TAG-dev" "local/$TAG-runtime"
+        run: |
+          images=()
+          for target in $TARGETS; do images+=("local/$TAG-$target"); done
+          "${{ matrix.image.path }}/test.sh" "${images[@]}"
 
       # The full version of the DHI runtime image (e.g. 3.14.10-debian13 for
-      # the 3.14-debian13 folder), published as a second, pinned-version tag.
-      # Checked on PRs too, so a label DHI changes fails before release.
+      # the 3.14-debian13 folder), or of the dev image without its -dev suffix
+      # when there is no runtime (3.10.1-r0-jdk21-alpine3.23 for Maven),
+      # published as a second, pinned-version tag. Checked on PRs too, so a
+      # label DHI changes fails before release.
       - name: Read version
         run: |
-          version=$(docker inspect --format '{{ index .Config.Labels "com.docker.dhi.version" }}' "local/$TAG-runtime")
-          if [[ ! "$version" =~ ^[0-9][0-9.]*-[a-z0-9.]+$ || "$version" != *"-${TAG#*-}" ]]; then
+          target=runtime
+          if [[ " $TARGETS " != *" runtime "* ]]; then target=dev; fi
+          version=$(docker inspect --format '{{ index .Config.Labels "com.docker.dhi.version" }}' "local/$TAG-$target")
+          if [[ $target == dev ]]; then version=${version%-dev}; fi
+          if [[ ! "$version" =~ ^[0-9][0-9.]*(-[a-z0-9.]+)+$ || "$version" != *"-${TAG#*-}" ]]; then
             echo "::error::DHI version label '$version' does not fit tag '$TAG'"
             exit 1
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
-          echo "Version tags: \`$version\`, \`$version-dev\`" >> "$GITHUB_STEP_SUMMARY"
+          tags="\`$version-dev\`"
+          if [[ $target == runtime ]]; then tags="\`$version\`, $tags"; fi
+          echo "Version tags: $tags" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Java smoke test (linux/arm64)
-        if: matrix.image.repo == 'eclipse-temurin'
-        run: ${{ matrix.image.path }}/test.sh "local/$TAG-dev-arm64" "local/$TAG-runtime-arm64"
+        if: matrix.image.java
+        run: |
+          images=()
+          for target in $TARGETS; do images+=("local/$TAG-$target-arm64"); done
+          "${{ matrix.image.path }}/test.sh" "${images[@]}"
 
       # Secrets only: Docker Scout is the vulnerability gate, as it applies
       # DHI's VEX and matches what Docker Hub shows
@@ -120,6 +138,7 @@ jobs:
           scanners: secret
           exit-code: '1'
       - name: Trivy secrets (runtime)
+        if: contains(matrix.image.targets, 'runtime')
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: local/${{ env.TAG }}-runtime
@@ -137,21 +156,21 @@ jobs:
       - name: Docker Scout
         run: |
           flags=(--exit-code --format markdown)
-          if [[ "${{ matrix.image.repo }}" != eclipse-temurin && "${{ vars.SCOUT_ONLY_FIXED }}" != false ]]; then
+          if [[ "$JAVA" != true && "${{ vars.SCOUT_ONLY_FIXED }}" != false ]]; then
             flags+=(--only-fixed)
           fi
           if compgen -G "vex/*.json" > /dev/null; then
             flags+=(--vex-location vex)
           fi
           status=0
-          for target in dev runtime; do
+          for target in $TARGETS; do
             echo "### Docker Scout: $TAG $target" >> "$GITHUB_STEP_SUMMARY"
             docker scout cves "${flags[@]}" \
               "local://local/$TAG-$target" \
               >> "$GITHUB_STEP_SUMMARY" || status=1
           done
-          if [[ "${{ matrix.image.repo }}" == eclipse-temurin ]]; then
-            for target in dev runtime; do
+          if [[ "$JAVA" == true ]]; then
+            for target in $TARGETS; do
               echo "### Docker Scout: $TAG $target (linux/arm64)" >> "$GITHUB_STEP_SUMMARY"
               docker scout cves "${flags[@]}" --platform linux/arm64 \
                 "local://local/$TAG-$target-arm64" >> "$GITHUB_STEP_SUMMARY" || status=1
@@ -162,7 +181,7 @@ jobs:
       - name: Push (linux/amd64 + linux/arm64) and sign
         if: inputs.push
         run: |
-          for target in dev runtime; do
+          for target in $TARGETS; do
             suffix=$([[ $target == dev ]] && echo -dev || true)
             docker buildx build --platform linux/amd64,linux/arm64 --target "$target" \
               --sbom=true --provenance=mode=max \

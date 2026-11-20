@@ -1,8 +1,8 @@
-# Nightly: scan the published images, both targets and both platforms, with
+# Nightly: scan the published images, each target and both platforms, with
 # Docker Scout. Each image gets at most one open issue, covering its runtime
-# and -dev tags on both platforms: a vulnerability found since the last
-# release opens it or comments on it, and a night on which all four scans of
-# the image pass closes it.
+# and -dev tags (only -dev for Maven) on both platforms: a vulnerability found
+# since the last release opens it or comments on it, and a night on which all
+# scans of the image pass closes it.
 # The fix is usually a newer DHI digest: merge Dependabot's PR, or run
 # Release by hand to rebuild on the latest one.
 name: Rescan
@@ -24,22 +24,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # One entry per published tag: the runtime one ("variant": "") and
+      # the -dev one, or only -dev for an image with no runtime target
       - id: list
-        run: echo "images=$(.github/scripts/list-images.sh)" >> "$GITHUB_OUTPUT"
+        run: |
+          images=$(.github/scripts/list-images.sh | jq -c \
+            '[.[] | . as $i | .targets[] | $i + {variant: (if . == "dev" then "-dev" else "" end)}]')
+          echo "images=$images" >> "$GITHUB_OUTPUT"
 
   scan:
     needs: list
     # The report job parses this name: "scan <repo>:<tag> <target> <platform>"
-    name: scan ${{ matrix.image.repo }}:${{ matrix.image.tag }} ${{ matrix.variant || 'runtime' }} ${{ matrix.platform }}
+    name: scan ${{ matrix.image.repo }}:${{ matrix.image.tag }} ${{ matrix.image.variant || 'runtime' }} ${{ matrix.platform }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         image: ${{ fromJSON(needs.list.outputs.images) }}
-        variant: ["", "-dev"]
         platform: [linux/amd64, linux/arm64]
     env:
-      REF: ${{ vars.DOCKERHUB_NAMESPACE }}/${{ matrix.image.repo }}:${{ matrix.image.tag }}${{ matrix.variant }}
+      REF: ${{ vars.DOCKERHUB_NAMESPACE }}/${{ matrix.image.repo }}:${{ matrix.image.tag }}${{ matrix.image.variant }}
     steps:
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
@@ -53,7 +57,7 @@ jobs:
           command: cves
           image: registry://${{ env.REF }}
           platform: ${{ matrix.platform }}
-          only-fixed: ${{ matrix.image.repo != 'eclipse-temurin' && vars.SCOUT_ONLY_FIXED != 'false' }}
+          only-fixed: ${{ !matrix.image.java && vars.SCOUT_ONLY_FIXED != 'false' }}
           exit-code: true
           summary: true
 
@@ -103,7 +107,7 @@ jobs:
                 gh issue create --title "$TITLE" --body "$body"
               fi
             elif [[ -n "$number" && -z "$unfinished" ]]; then
-              gh issue close "$number" --comment "All scans of the runtime and -dev tags, on both platforms, pass: $run_url"
+              gh issue close "$number" --comment "All scans of the published tags, on both platforms, pass: $run_url"
             fi
             # Otherwise no vulnerability, but a scan did not finish: leave any issue as it is.
           done 3< <(cut -d' ' -f1 results.txt | sort -u)
