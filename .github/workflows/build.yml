@@ -52,6 +52,7 @@ jobs:
         image: ${{ fromJSON(inputs.images) }}
     env:
       NAME: ${{ vars.DOCKERHUB_NAMESPACE }}/${{ matrix.image.repo }}
+      REPO: ${{ matrix.image.repo }}
       TAG: ${{ matrix.image.tag }}
       DOCKERFILE: ${{ matrix.image.path }}/Dockerfile
       TARGETS: ${{ join(matrix.image.targets, ' ') }}
@@ -107,14 +108,36 @@ jobs:
       # when there is no runtime (3.10.1-r0-jdk21-alpine3.23 for Maven),
       # published as a second, pinned-version tag. Checked on PRs too, so a
       # label DHI changes fails before release.
+      #
+      # Eclipse Temurin is the exception: DHI's label drops the update number
+      # of a JDK patch release (21.0.13.1+2 is labelled 21.0.13.2), so a fixed
+      # build can sort below the one it replaces (21.0.13+9, 21.0.13.9). Its
+      # tag is the JDK's own JAVA_VERSION with + as _, as in the Docker
+      # Official Images (21.0.13.1_2-alpine3.23), and dev and runtime must
+      # agree on it.
       - name: Read version
         run: |
           target=runtime
           if [[ " $TARGETS " != *" runtime "* ]]; then target=dev; fi
-          version=$(docker inspect --format '{{ index .Config.Labels "com.docker.dhi.version" }}' "local/$TAG-$target")
-          if [[ $target == dev ]]; then version=${version%-dev}; fi
-          if [[ ! "$version" =~ ^[0-9][0-9.]*(-[a-z0-9.]+)+$ || "$version" != *"-${TAG#*-}" ]]; then
-            echo "::error::DHI version label '$version' does not fit tag '$TAG'"
+          if [[ "$REPO" == eclipse-temurin ]]; then
+            java_version() {
+              docker inspect --format '{{ range .Config.Env }}{{ println . }}{{ end }}' "$1" |
+                sed -n 's/^JAVA_VERSION=[a-z]*-//p'
+            }
+            java=$(java_version "local/$TAG-$target")
+            for t in $TARGETS; do
+              if [[ "$(java_version "local/$TAG-$t")" != "$java" ]]; then
+                echo "::error::JAVA_VERSION differs between targets of '$TAG'"
+                exit 1
+              fi
+            done
+            version="${java/+/_}-${TAG#*-}"
+          else
+            version=$(docker inspect --format '{{ index .Config.Labels "com.docker.dhi.version" }}' "local/$TAG-$target")
+            if [[ $target == dev ]]; then version=${version%-dev}; fi
+          fi
+          if [[ ! "$version" =~ ^[0-9][0-9.]*(_[0-9]+)?(-[a-z0-9.]+)+$ || "$version" != *"-${TAG#*-}" ]]; then
+            echo "::error::Version '$version' does not fit tag '$TAG'"
             exit 1
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"

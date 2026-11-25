@@ -84,7 +84,8 @@ Image names and tags follow the DHI image each is built on
 also tagged with the full version of that DHI image, such as
 `python:3.14.10-debian13` and `python:3.14.10-debian13-dev`: the short tag
 moves to each new version, the full-version tag stays on one version (it
-still moves when DHI rebuilds that version with OS patches).
+still moves when DHI rebuilds that version with OS patches). Eclipse Temurin
+is the exception: see [Java 21](#java-21-eclipse-temurin-alpine-323).
 
 Published images support `linux/amd64` and `linux/arm64`, with an SBOM,
 provenance and a cosign signature. Signatures are OCI referrers, not
@@ -158,6 +159,15 @@ version in any Debian release yet:
 The images are published under the runtime's tag, `21-alpine3.23` and
 `21-alpine3.23-dev`, although DHI's dev image is tagged
 `21-jdk-alpine3.23-dev`.
+
+The full-version tag is the JDK's own version, read from the image's
+`JAVA_VERSION`, with `+` written as `_` as in the Docker Official Images:
+`21.0.13.1_2-alpine3.23` and `21.0.13.1_2-alpine3.23-dev` for Temurin
+21.0.13.1+2. DHI's `com.docker.dhi.version` label is not used here because it
+drops the update number of a patch release (it labels 21.0.13.1+2 as
+`21.0.13.2`), so a fixed build would sort below the build it replaces
+(21.0.13+9, labelled `21.0.13.9`). CI fails if the dev and runtime images
+carry different JDK versions.
 
 Debian 13 was evaluated first, but its gcc and libstdc++ packages have an
 unfixed CVE, which the Java gate does not allow. Alpine 3.23 is used instead;
@@ -250,7 +260,8 @@ the lint job has no secrets.
 4. Open a PR. The CI picks the folder up; no workflow changes are needed. It
    publishes as `<namespace>/<repo>:<tag>` and `:<tag>-dev`, plus the full
    version from the DHI runtime image's `com.docker.dhi.version` label (the
-   dev image's, without `-dev`, when there is no runtime). Name
+   dev image's, without `-dev`, when there is no runtime; Eclipse Temurin
+   uses the JDK's `JAVA_VERSION` instead). Name
    the folders after the DHI image: `<repo>` as DHI's repository, `<tag>` as
    its runtime tag.
 

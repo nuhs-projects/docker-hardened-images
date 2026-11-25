@@ -14,13 +14,12 @@
 # changed since it:
 #   images/<repo>/<tag>/**   that image (Dockerfile, test.sh, ...)
 #   hardening/**             images whose Dockerfile mounts hardening/
-#   the build pipeline       every image: build.yml and the scripts it runs
-#                            decide how every image is built, scanned and
-#                            pushed
-# Anything else (README, other workflows, Dependabot config) builds nothing.
+# Anything else builds nothing, including the build pipeline (build.yml and
+# the scripts it runs): an image is only rebuilt and rescanned when its own
+# inputs change, so a pipeline change cannot fail on an unrelated image's new
+# CVEs.
 set -euo pipefail
 
-pipeline='^\.github/(workflows/build\.yml|scripts/(list-images|dhi-vex)\.sh)$'
 java_repos=' eclipse-temurin maven '
 
 all=$(find images -mindepth 3 -maxdepth 3 -name Dockerfile -exec dirname {} \; | sort)
@@ -29,20 +28,16 @@ if [[ $# -eq 0 ]]; then
     selected=$all
 else
     changed=$(git diff --name-only "$1"...HEAD)
-    if grep -qE "$pipeline" <<<"$changed"; then
-        selected=$all
-    else
-        selected=$(
-            # Changed image folders that still exist (a deleted image builds nothing)
-            grep -Fxf <(grep -oE '^images/[^/]+/[^/]+' <<<"$changed" | sort -u) <<<"$all" || true
-            if grep -q '^hardening/' <<<"$changed"; then
-                for path in $all; do
-                    if grep -q 'source=hardening' "$path/Dockerfile"; then echo "$path"; fi
-                done
-            fi
-        )
-        selected=$(sort -u <<<"$selected")
-    fi
+    selected=$(
+        # Changed image folders that still exist (a deleted image builds nothing)
+        grep -Fxf <(grep -oE '^images/[^/]+/[^/]+' <<<"$changed" | sort -u) <<<"$all" || true
+        if grep -q '^hardening/' <<<"$changed"; then
+            for path in $all; do
+                if grep -q 'source=hardening' "$path/Dockerfile"; then echo "$path"; fi
+            done
+        fi
+    )
+    selected=$(sort -u <<<"$selected")
 fi
 
 for path in $selected; do
